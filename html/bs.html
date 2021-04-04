@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Beat Saber Scores</title>
+
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"/>
+    <!-- <link rel="stylesheet" href="https://cdn.datatables.net/1.10.24/css/jquery.dataTables.min.css"/> -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.10.24/css/dataTables.bootstrap4.min.css"/>
+</head>
+<body>
+    <div id="event"></div>
+    <table id="scoresTable" class="table table-striped table-hover" style="word-break:break-word; width: 100%;"></table>
+
+</body>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"
+        integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4="
+        crossorigin="anonymous"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"></script>
+<script src="https://cdn.datatables.net/1.10.24/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/1.10.24/js/dataTables.bootstrap4.min.js"></script>
+<script src="https://use.fontawesome.com/56bce617c5.js"></script>
+
+<script>
+    let db;
+    let users = ["3629032937153154", "76561198080455348"] //, "76561197992683269" is Baconaize bacon?
+    let scores = {};
+    let lastScore = {};
+    let eventTarget = null;
+    $(document).ready(() => {
+        if (!window.indexedDB) {
+            $("body div").text("Your browser doesn't support a stable version of IndexedDB. This page will not function.");
+            return;
+        }
+        let request = window.indexedDB.open("MyTestDatabase", 3);
+        request.onerror = (event) => {
+            // Do something with request.errorCode!
+        };
+        request.onupgradeneeded = (event) => {
+            console.log(event.oldVersion + " -> " + event.newVersion);
+            // Save the IDBDatabase interface
+            var db = event.target.result;
+            // Create an objectStore for this database
+            let store = null;
+            if (event.oldVersion < 1) {
+                store = db.createObjectStore("scores", {keyPath: ["user", "songHash", "difficulty"]});
+            } else {
+                store = request.transaction.objectStore("scores");
+            }
+            switch(event.oldVersion) {
+                case 0: //handled special earlier
+                case 1: //empty
+                case 2:
+                case 3:
+                    store.createIndex("ts", "timeSet");
+                    store.createIndex("user", "user");
+                    store.createIndex("song", ["songHash", "difficulty"]);
+            }
+        };
+        request.onsuccess = (event) => {
+            db = event.target.result;
+            // prep event listener
+            eventTarget = $("#event");
+            eventTarget[0].addEventListener('userLoaded', handleDoneLoadingUser, false);
+            loadData(); 
+        }
+    });
+    function loadData() {
+        let tx = db.transaction("scores").objectStore("scores");
+        tx.openCursor().onsuccess = (event) => {
+            var cursor = event.target.result;
+            if (cursor) {
+                // record the most recent score for each user
+                if (cursor.value.timeSet) {
+                    let date = new Date(cursor.value.timeSet);
+                    if (!lastScore[cursor.value.user] || lastScore[cursor.value.user].getTime() < date) {
+                        lastScore[cursor.value.user] = date;
+                    }
+                }
+                // create the merged score objects for the data table
+                cursor.continue();
+            }
+            else {
+                console.log("Loaded all entries from DB. Fetching data from scoresaber.");
+                updateData();
+            }
+        }
+    }
+    function updateData() {
+        // TODO Load all the data we've got in the db. Then load using recent until we hit a score we've already got
+        for (let i = 0; i < users.length; i++) {
+            getUserData(users[i]);
+        }
+    }
+    let userData = {};
+    function getUserData(userId) {
+        fetch(`https://new.scoresaber.com/api/player/${userId}/full`).then(r => r.json()).then(d => {
+            console.log(d);
+            userData[userId] = d;
+            updateUser(userId)
+        });
+    }
+    function updateUser(userId, page = 1, toSave, retry = 0) {
+        if (!toSave) {
+            toSave = [];
+        }
+        fetch(`https://new.scoresaber.com/api/player/${userId}/scores/recent/${page}`)
+            .then( r => {
+                let done = function() {
+                    let store = db.transaction("scores", 'readwrite').objectStore("scores");
+                    toSave.forEach((s) => {
+                        let r = store.add(s);
+                        r.onerror = (e) => console.log("error", s, e);
+                    })
+                    const ev = new CustomEvent('userLoaded', { detail: userId });
+                    eventTarget[0].dispatchEvent(ev);
+                }
+                if (!r.ok) {
+                    done()
+                    return; // done
+                }
+                r.json().then(d => {
+                    console.log(d.scores);
+                    for (let i = 0; i < d.scores.length; i++) {
+                        d.scores[i].user = userId;
+                        if (new Date(d.scores[i].timeSet) <= lastScore[userId]) {
+                            console.log("Received score already cached - halting fetch for user " + userId);
+                            done();
+                            return;
+                        }
+                        toSave.push(d.scores[i]);
+                    }
+                    updateUser(userId, page + 1, toSave);
+                })
+            }).catch((err) => {
+                retry++;
+                if (retry > 5) {
+                    console.error("Failed to update data");
+                    return;
+                }
+                console.error("Failed to fetch, retry " + (retry));
+                updateUser(userId, page, toSave, retry);
+            });
+    }
+
+    let loaded = {};
+    function handleDoneLoadingUser(e) {
+        loaded[e.detail] = true;
+        for (let i = 0; i < users.length; i++) {
+            if(!loaded[users[i]]) {
+                return;
+            }
+        }
+        // if we get this far, everyone is loaded!
+        console.log("All users loaded! Creating data model.")
+        loadCompleteDataset();
+    }
+    let dataMap = {};
+    let dataArray = [];
+    function loadCompleteDataset() {
+        let tx = db.transaction("scores").objectStore("scores");
+        tx.openCursor().onsuccess = (event) => {
+            var cursor = event.target.result;
+            if (cursor) {
+                if (users.indexOf(cursor.value.user) >= 0) { // ignore entries for users removed
+                    // create the merged score objects for the data table
+                    let k = cursor.value.songHash + ':' + cursor.value.difficulty;
+                    if (!dataMap[k]) {
+                        dataMap[k] = {
+                            leaderboardId: cursor.value.leaderboardId,
+                            songHash: cursor.value.songHash,
+                            songName: cursor.value.songName,
+                            songSubName: cursor.value.songSubName,
+                            songAuthorName: cursor.value.songAuthorName,
+                            levelAuthorName: cursor.value.levelAuthorName,
+                            difficulty: cursor.value.difficulty,
+                            difficultyRaw: cursor.value.difficultyRaw,
+                            users: 0,
+                            scores: {}
+                        };
+                    }
+                    dataMap[k].users++;
+                    dataMap[k].scores[cursor.value.user] = {
+                        score: cursor.value.score,
+                        scoreId: cursor.value.scoreId,
+                        rank: cursor.value.rank,
+                        unmodifiedScore: cursor.value.unmodififiedScore,
+                        mods: cursor.value.mods,
+                        pp: cursor.value.pp,
+                        weight: cursor.value.weight,
+                        timeSet: cursor.value.timeSet,
+                        maxScore: cursor.value.maxScore
+                    }
+                }
+                cursor.continue();
+            }
+            else {
+                for (let k in dataMap) {
+                    dataArray.push(dataMap[k]);
+                }
+                console.log(dataArray);
+                console.log("Full dataset loaded. Rendering table.");
+                render();
+            }
+        }
+    }
+    function render() {
+        let cols = [
+            {title: "Diff", data: "difficulty", width: "30px", render: (d) => d},
+            {title: "Song", data: "songName", render: (d,t,r) => {
+                return `<div style="float:left;">
+                            <img width="35" style="border-radius:15%" src="https://scoresaber.com/imports/images/songs/${r.songHash}.png"/>
+                        </div><div style="float: left;" class="songTitle">
+                            ${d}
+                            <span class="songBtnWrapper">
+                                <span title="Open in BeatSaver" class="songBtn" onclick="beatSaver('${r.songHash}')"><svg  class="songBtn"  xmlns='http://www.w3.org/2000/svg'   width='200' height='200' viewBox='0 0 200 200' version='1.1'><g fill='none' stroke='#000000' stroke-width='10'> <path d='M 100,7 189,47 100,87 12,47 Z' stroke-linejoin='round'/> <path d='M 189,47 189,155 100,196 12,155 12,47' stroke-linejoin='round'/> <path d='M 100,87 100,196' stroke-linejoin='round'/> <path d='M 26,77 85,106 53,130 Z' stroke-linejoin='round'/> </g> </svg></span>
+                                <i onclick="oneClick('${r.songHash}')" class="fa fa-hand-pointer-o songBtn" title="One-Click Install"></i>
+                                <i onclick="beastSaber('${r.songHash}')" class="fa fa-external-link songBtn" title="Open in BeastSaber"></i>
+                                <i onclick="preview('${r.songHash}')" class="fa fa-play-circle songBtn" title="Preview"></i>
+                            </span>
+                            <br>${r.songAuthorName}
+                        </div>`;
+                }},
+            {title: "Players", data: "users", width: "60px"}
+        ];
+        for (let i = 0; i < users.length; i++) {
+            let u = users[i];
+            let name = userData[u].playerInfo.playerName;
+            cols.push({title: name, data: "scores." + u + ".score", defaultContent: "", render: (d,t,r) => {
+                    if (t === 'display') {
+                        if(!r.scores[u]) {
+                            return "";
+                        }
+                        return `<div class="score">
+                                    ${d}<br><span>(#${r.scores[u].rank})</span>
+                                </div> `
+                    }
+                    return d;
+                }})
+        }
+        $("#scoresTable").dataTable({
+            data: dataArray,
+            columns: cols,
+            order: [[2, "desc"], [1, "asc"]],
+            paging: false
+        });
+    }
+
+    async function getKey(hash, fn) {
+        const resp = await fetch(`https://beatsaver.com/api/maps/by-hash/${hash}`);
+        const data = await resp.json();
+        fn(data.key);
+    }
+
+
+    function beatSaver(hash) {
+        getKey(hash, (key) => window.open(`https://beatsaver.com/beatmap/${key}`,'_blank'));
+    }
+    function oneClick(hash) {
+        getKey(hash, (key) => window.open(`beatsaver://${key}`,'_blank'));
+    }
+    function beastSaber(hash) {
+        getKey(hash, (key) => window.open(`https://bsaber.com/songs/${key}/`,'_blank'));
+    }
+    function preview(hash) {
+        getKey(hash, (key) => window.open(`https://skystudioapps.com/bs-viewer/?id=${key}`,'_blank'));
+    }
+</script>
+<style>
+    /*
+    html, body {
+        background-color: black;
+        color: white;
+    }
+     */
+    .table td {
+        padding-top: 4px;
+        padding-bottom: 1px;
+    }
+    .songTitle {
+        line-height: 1.1;
+        padding-left: 5px;
+    }
+    .score {
+        line-height: 1.3;
+    }
+    .score span {
+        font-size: small;
+    }
+    .songBtnWrapper {
+        padding-left: 10px;
+    }
+
+    .songBtn {
+        width: 1em;
+        height: 1em;
+        cursor: pointer;
+    }
+</style>
+</html>
