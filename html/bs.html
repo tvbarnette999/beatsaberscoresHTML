@@ -196,6 +196,14 @@
             }
             else {
                 for (let k in dataMap) {
+                    for (k1 in dataMap[k].scores) {
+                        dataMap[k].scores[k1].localRank = 1;
+                        for (k2 in dataMap[k].scores) {
+                            if (k1 !== k2 && dataMap[k].scores[k2].score > dataMap[k].scores[k1].score) {
+                                dataMap[k].scores[k1].localRank++;
+                            }
+                        }
+                    }
                     dataArray.push(dataMap[k]);
                 }
                 console.log(dataArray);
@@ -223,6 +231,16 @@
                 }},
             {title: "Players", data: "users", width: "60px"}
         ];
+        function renderNumber(n) {
+            let s = "" + n;
+            if (n > 999999) {
+                s = s.substring(0, s.length - 6) + "," + s.substring(s.length - 6);
+            }
+            if (n > 999) {
+                s = s.substring(0, s.length - 3) + "," + s.substring(s.length - 3);
+            }
+            return s;
+        }
         for (let i = 0; i < users.length; i++) {
             let u = users[i];
             let name = userData[u].playerInfo.playerName;
@@ -231,8 +249,14 @@
                         if(!r.scores[u]) {
                             return "";
                         }
+                        let clazz = ""
+                        switch (r.scores[u].localRank) {
+                            case 1: clazz = "gold"; break;
+                            case 2: clazz = "silver"; break;
+                            case 3: clazz = "bronze"; break;
+                        }
                         return `<div class="score">
-                                    ${d}<br><span>(#${r.scores[u].rank})</span>
+                                    ${renderNumber(d)}<div class="medal ${clazz}">${r.scores[u].localRank}</div><br><span>(#${renderNumber(r.scores[u].rank)})</span>
                                 </div> `
                     }
                     return d;
@@ -241,7 +265,7 @@
         $("#scoresTable").dataTable({
             data: dataArray,
             columns: cols,
-            order: [[2, "desc"], [1, "asc"]],
+            order: [[2, "desc"], [1, "asc"], [0, "desc"]],
             paging: false
         });
     }
@@ -295,6 +319,26 @@
         width: 1em;
         height: 1em;
         cursor: pointer;
+    }
+
+    .medal {
+        border-radius: 10px;
+        color:black;
+        margin: 5px;
+        border: 1px solid black;
+        width: 25px;
+        float: left;
+        text-align: center;
+        font-size: small;
+    }
+    .medal.gold {
+        background-color: gold;
+    }
+    .medal.silver {
+        background-color: silver;
+    }
+    .medal.bronze {
+        background-color: #cd7f32;
     }
 </style>
 </html>
