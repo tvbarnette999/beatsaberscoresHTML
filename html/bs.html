@@ -271,7 +271,7 @@
     }
 
     async function getKey(hash, fn) {
-        const resp = await fetch(`https://beatsaver.com/api/maps/by-hash/${hash}`);
+        const resp = await fetch(`https://beatsaver.com/api/maps/hash/${hash}`);
         const data = await resp.json();
         fn(data.key);
     }
